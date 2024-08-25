@@ -1,3 +1,147 @@
 MANUAL ESP32 + DHT22 + SERVO + BUZZER + LED + SWITCH
 
-Vendo as imagens image.png
+Vendo as imagens image.png(ESP1) e image2.png(ESP2), conseguimos identificar todos os componentes dos requisitos. Na ESP1,
+temos o Servo1 e o Sensor1 na parte de cima, o Servo2 e o Sensor2 na parte de baixo, e o switch acima da placa ESP.
+
+Vamos analisar o script de cada uma e entender como o programa funciona.
+ESP1:
+
+import network                              -
+import time                                 /
+from machine import Pin, PWM                /     BIBLIOTECAS UTILIZADAS
+import dht                                  /
+import ujson                                /
+from umqtt.simple import MQTTClient         -
+
+MQTT_CLIENT_ID = "esp1-weather-monitor"     -
+MQTT_BROKER = "broker.mqttdashboard.com"    /
+MQTT_USER = ""                              /    DADOS DA CONEXÃO DO SERVIDOR MQTT 
+MQTT_PASSWORD = ""                          /    QUE SERÁ UTILIZADO PELAS PLACAS
+MQTT_TOPIC = "wokwi-weather"                -
+
+sensor1 = dht.DHT22(Pin(14))                -
+sensor2 = dht.DHT22(Pin(27))                /
+servo1 = PWM(Pin(25), freq=50)              /    DECLARAÇÃO DAS VARIÁVEIS DOS PINOS
+servo2 = PWM(Pin(26), freq=50)              /    QUE ESTÃO ATIVADOS
+slide_switch = Pin(33, Pin.IN)              -
+
+def move_servo(servo, angle):
+    duty = int(40 + (angle / 180) * 75)                           -
+    servo.duty(duty)                                              /    FUNÇÃO PARA MOVER O SERVOMOTOR
+    print(f"Movendo servo para {angle} graus. Duty: {duty}")      -
+
+print("Conectando no Wi-Fi...", end="")                                                     -
+sta_if = network.WLAN(network.STA_IF)                                                       /
+sta_if.active(True)                                                                         /
+sta_if.connect('Wokwi-GUEST', '')                                                           /     
+while not sta_if.isconnected():                                                             /
+  print(".", end="")                                                                        /    CONEXÃO AO MQTT
+  time.sleep(0.1)                                                                           /
+print(" Conectado!")                                                                        /
+                                                                                            /
+print("Conectando ao servidor MTTQ... ", end="")                                            / 
+client = MQTTClient(MQTT_CLIENT_ID, MQTT_BROKER, user=MQTT_USER, password=MQTT_PASSWORD)    /  
+client.connect()                                                                            /
+print("Conectado!")                                                                         -
+
+prev_weather = ""                                                                            -
+while True:                                                                                  /
+    sensor1.measure()                                                                        /
+    temp1 = sensor1.temperature()                                                            /
+    humidity1 = sensor1.humidity()                                                           /
+                                                                                             /
+    sensor2.measure()                                                                        /
+    temp2 = sensor2.temperature()                                                            /
+    humidity2 = sensor2.humidity()                                                           /
+                                                                                             /   MEDIÇÃO DE TEMPERATURA E UMIDADE. CONDIÇÕES DE 
+    if temp1 >= 60:                                                                          /   ABERTURA DO SERVOMOTORES(IF AMBIENTE1 >= 60 GRAUS
+        print(f"Temperatura ambiente 1: {temp1}C - Abrindo Servo 1 para 50 graus")           /   IF AMBIENTE2 >= 60 GRAUS)
+        move_servo(servo1, 50)                                                               /
+    else:                                                                                    /
+        print(f"Temperatura ambiente 1: {temp1}C - Fechando Servo 1")                        /
+        move_servo(servo1, 0)                                                                /
+                                                                                             /
+    if temp2 >= 60:                                                                          /
+        print(f"Temperatura ambiente 2: {temp2}C - Abrindo Servo 2 para 180 graus")          /
+        move_servo(servo2, 180)                                                              /  
+    else:                                                                                    /
+        print(f"Temperatura ambiente 2: {temp2}C - Fechando Servo 2")                        /
+        move_servo(servo2, 0)                                                                -
+
+    if (humidity1 < 20 or humidity2 < 20) and slide_switch.value() == 0:
+        message = ujson.dumps({"temp1": temp1, "humidity1": humidity1, "temp2": temp2, "humidity2": humidity2, "alert": "Umidade baixa"})    -
+    else:                                                                                                                                    /    AVISO DE BAIXA HUMIDADE
+        message = ujson.dumps({"temp1": temp1, "humidity1": humidity1, "temp2": temp2, "humidity2": humidity2, "alert": "Umidade normal"})   /    DETECÇÃO DE CONDIÇÃO DO SLIDE SWITCH
+                                                                                                                                             -
+    if message != prev_weather:                                                                                                              -
+        print("Reportando ao tópico MQTT {}: {}".format(MQTT_TOPIC, message))                                                                /
+        client.publish(MQTT_TOPIC, message)                                                                                                  /    COMUNICAÇÃO COM O ESP2 DE
+        prev_weather = message                                                                                                               /    ALUALIZAÇÃO DAS CONDIÇÕES
+    else:                                                                                                                                    /    CLIMÁTICAS
+        print("Sem alterações")                                                                                                              /
+                                                                                                                                             /
+    time.sleep(1)                                                                                                                            -   /FIM DO CÓDIGO/
+
+
+
+
+
+ESP2:
+
+import network                                      -
+import ujson                                        /
+from machine import Pin                             /    BIBLIOTECAS
+from time import sleep                              /
+from umqtt.simple import MQTTClient                 -
+
+buzzer = Pin(15, Pin.OUT)                           -
+led = Pin(16, Pin.OUT)                              /  DECLARAÇÃO DE PINOS QUE ESTÃO ATIVOS
+slide_switch = Pin(17, Pin.IN)                      -
+
+alert_active = False                                / VARIÁVEL BOOLEANA PARA ATIVAÇÃO DOS ATUADORES
+
+def control_alarm():                                         -
+    if alert_active and slide_switch.value() == 0:           /
+        buzzer.value(1)                                      /
+        led.value(1)                                         /
+        sleep(1)                                             /    FUNÇÃO DE VALORES (ON/OFF) DO BUZZER E LED
+        buzzer.value(0)                                      /
+        led.value(0)                                         /
+        sleep(1)                                             /
+    else:                                                    /
+        buzzer.value(0)                                      /
+        led.value(0)                                         -
+
+def mqtt_message(topic, msg):                                -
+    global alert_active                                      /
+    print("Alerta: ", msg)                                   /
+    try:                                                     /  CAPTAÇÃO DA MENSAGEM DO ESP1,
+        data = ujson.loads(msg)                              /  INÍCIO DE AVISO COM OS ATUADORES 
+        if data.get("alert") == "Umidade baixa":             /
+            alert_active = True                              /
+        else:                                                /
+            alert_active = False                             -
+    
+        control_alarm()  
+    except Exception as e:
+        print("Erro:", e)
+
+print("Conectando ao Wi-Fi...", end="")                      -
+wifi = network.WLAN(network.STA_IF)                          /
+wifi.active(True)                                            /
+wifi.connect("Wokwi-GUEST", "")                              /    CONEXÃO AO SERVIDOR MQTT
+while not wifi.isconnected():                                /
+    sleep(0.5)                                               /
+    print(".", end="")                                       /
+print("Conectado!")                                          -
+
+print("Conectando ao MQTT...")                               -
+client = MQTTClient("esp2", "broker.mqttdashboard.com")      /
+client.set_callback(mqtt_message)                            /    FINALIZAÇÃO DE CONEXÃO
+client.connect()                                             /
+client.subscribe("wokwi-weather")                            /
+print("Conectado com sucesso!")                              -
+
+while True:                                                  -
+    client.check_msg()                                       /    ATUALIZAÇÃO AUTOMÁTICA DE INFORMAÇÕES RECEBIDAS
+    control_alarm()                                          - /FIM DO CÓDIGO/
